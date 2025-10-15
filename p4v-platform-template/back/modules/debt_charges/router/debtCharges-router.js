@@ -22,7 +22,7 @@ const routes = async (fastify) => {
     fastify.get("/generate/:id", { 
         schema: debtChargesInfoSchema, 
         preParsing: RouterGuard({ permissionLevel: "debtor", permissions: accessLevel.VIEW }) 
-    }, debtChargesController.generateTaxNotification);
+    }, debtChargesController.generateAllCharges);
     
     // Завантаження Excel файлу з правильною обробкою multipart
     fastify.post("/upload", { 

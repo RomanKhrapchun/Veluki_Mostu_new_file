@@ -6,7 +6,7 @@ class DebtChargesController {
 
     // Додати цей метод до існуючого debtChargesController
 
-    async generateTaxNotification(request, reply) {
+    /**async generateTaxNotification(request, reply) {
         try {
             //console.log('🔍 Tax notification generation requested for ID:', request.params.id);
             
@@ -27,6 +27,29 @@ class DebtChargesController {
             
             return reply.status(400).send({
                 message: error.message || 'Помилка при генерації податкового повідомлення'
+            });
+        }
+    }**/
+
+    async generateAllCharges(request, reply) {
+        try {
+            console.log('🔍 Generate all charges requested for ID:', request.params.id);
+            
+            const result = await debtChargesService.generateAllChargesByPayerName(request, reply);
+            return result;
+            
+        } catch (error) {
+            console.error('❌ Generate all charges controller error:', error);
+            Logger.error(error.message, { stack: error.stack });
+            
+            if (error?.response?.status === 401) {
+                return reply.status(401).send({
+                    message: "Не авторизований"
+                });
+            }
+            
+            return reply.status(400).send({
+                message: error.message || 'Помилка при генерації податкових повідомлень'
             });
         }
     }

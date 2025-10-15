@@ -1,3 +1,5 @@
+// front/src/pages/DebtCharges/DebtChargesList.jsx
+
 import React, {useCallback, useContext, useEffect, useMemo, useRef, useState} from 'react';
 import {useNavigate} from 'react-router-dom'
 import useFetch from "../../hooks/useFetch";
@@ -119,8 +121,6 @@ const DebtChargesList = () => {
             return `${numValue.toLocaleString('uk-UA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}₴`;
         };
 
-
-
         // Стилі для багаторядкового тексту
         const multiLineTextStyle = {
             fontSize: '14px',
@@ -198,7 +198,7 @@ const DebtChargesList = () => {
                         gap: '1px'
                     }}>
                         <Button
-                            title="Завантажити податкове повідомлення"
+                            title="Завантажити всі податкові повідомлення платника"
                             icon={downloadIcon}
                             size="small"
                             onClick={() => handleDownloadTaxNotification(record.id)}
@@ -484,6 +484,8 @@ const DebtChargesList = () => {
         } 
     };
 
+    // ==================== ЗМІНЕНО: НОВИЙ МЕТОД ====================
+    // Тепер генерує ВСІ нарахування платника замість одного
     const handleDownloadTaxNotification = async (chargeId) => {
         try {
             setStateDebtCharges(prevState => ({
@@ -503,7 +505,7 @@ const DebtChargesList = () => {
             const url = window.URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.download = `tax-notification-${chargeId}.docx`;
+            link.download = `tax-notifications-${chargeId}.docx`; // ЗМІНЕНО: назва файлу
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
@@ -513,7 +515,7 @@ const DebtChargesList = () => {
                 placement: "top",
                 duration: 4,
                 title: 'Успіх',
-                message: 'Податкове повідомлення успішно згенеровано.',
+                message: 'Податкові повідомлення платника успішно згеновано.', // ЗМІНЕНО: текст
                 type: 'success'
             })
 
@@ -532,7 +534,7 @@ const DebtChargesList = () => {
             notification({
                 type: 'error',
                 title: "Помилка генерації",
-                message: error?.response?.data?.message || error.message || 'Сталась помилка при генерації податкового повідомлення',
+                message: error?.response?.data?.message || error.message || 'Сталась помилка при генерації податкових повідомлень', // ЗМІНЕНО: текст
                 placement: 'top',
             })
         } finally {
@@ -542,6 +544,7 @@ const DebtChargesList = () => {
             }))
         }
     }
+    // ==================== КІНЕЦЬ ЗМІН ====================
 
     const handleUploadFile = async () => {
         if (!stateDebtCharges.selectedFile) {

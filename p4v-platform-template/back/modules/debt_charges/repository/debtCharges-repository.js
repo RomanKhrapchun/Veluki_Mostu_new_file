@@ -1,5 +1,3 @@
-const { sqlRequest } = require("../../../helpers/database");
-
 class DebtChargesRepository {
 
     async getDebtChargeById(chargeId, displayFieldsDebtCharges) {

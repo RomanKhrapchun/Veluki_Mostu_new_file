@@ -5,6 +5,7 @@ const { displayDebtChargesFields, allowedDebtChargesTableFilterFields, allowedDe
 const logRepository = require("../../log/repository/log-repository");
 const xlsx = require('xlsx');
 const debtorRepository = require("../../debtor/repository/debtor-repository");
+const { determineTaxType } = require('../../../utils/generateDocx');
 
 class DebtChargesService {
 
@@ -82,6 +83,148 @@ class DebtChargesService {
             sort_by: validSortBy,
             sort_direction: validSortDirection
         };
+    }
+
+    async generateAllChargesByPayerName(request, reply) {
+        try {
+            // Отримуємо ONE charge щоб витягти ім'я платника
+            const chargeData = await debtChargesRepository.getDebtChargeById(
+                request?.params?.id, 
+                displayDebtChargesFields
+            );
+            
+            if (!chargeData.length) {
+                throw new Error("Нарахування не знайдено");
+            }
+            
+            const payerName = chargeData[0].payer_name;
+            
+            if (!payerName) {
+                throw new Error("Не вказано ім'я платника");
+            }
+            
+            console.log(`🔍 Пошук всіх нарахувань для платника: ${payerName}`);
+            
+            // Отримуємо ВСІ нарахування цього платника
+            const allChargesResult = await debtChargesRepository.findDebtChargesByFilter(
+                1000, // limit
+                0,    // offset
+                payerName, // title для пошуку
+                {},   // whereConditions
+                displayDebtChargesFields,
+                'document_date',
+                'desc'
+            );
+            
+            if (!allChargesResult[0]?.data || allChargesResult[0].data.length === 0) {
+                throw new Error("Не знайдено нарахувань для цього платника");
+            }
+            
+            const allCharges = allChargesResult[0].data;
+            console.log(`📊 Знайдено ${allCharges.length} нарахувань`);
+            
+            // Отримуємо реквізити
+            const fetchRequisite = await debtorRepository.getRequisite();
+            if (!fetchRequisite.length) {
+                throw new Error("Реквізити не знайдені");
+            }
+            
+            const settings = fetchRequisite[0];
+            
+            // Шукаємо інформацію про боржника
+            let debtorInfo = null;
+            try {
+                const debtorData = await debtorRepository.findDebtByFilter(
+                    1, 0, payerName, {},
+                    ['id', 'name', 'date', 'non_residential_debt', 'residential_debt', 
+                    'land_debt', 'orenda_debt', 'identification', 'mpz']
+                );
+                
+                if (debtorData[0]?.data && debtorData[0].data.length > 0) {
+                    debtorInfo = debtorData[0].data[0];
+                    console.log(`✅ Знайдено інформацію про боржника`);
+                }
+            } catch (error) {
+                console.log('⚠️ Не вдалося отримати інформацію про боржника');
+            }
+            
+            // Групуємо нарахування за типом податку
+            const groupedCharges = this.groupChargesByTaxType(allCharges);
+            
+            // Генеруємо документ
+            const result = await this.createMultipleChargesDocument(
+                groupedCharges, 
+                settings, 
+                debtorInfo,
+                payerName
+            );
+            
+            if (!result) {
+                throw new Error("Не вдалося згенерувати документ");
+            }
+            
+            // Логування
+            await logRepository.createLog({
+                session_user_name: payerName,
+                row_pk_id: chargeData[0].id,
+                uid: request?.user?.id,
+                action: 'GENERATE_ALL_CHARGES',
+                client_addr: request?.ip,
+                application_name: 'Генерування всіх податкових повідомлень',
+                action_stamp_tx: new Date(),
+                action_stamp_stm: new Date(),
+                action_stamp_clk: new Date(),
+                schema_name: 'ower',
+                table_name: 'debt_charges',
+                oid: '16504',
+            });
+            
+            reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+            reply.header('Content-Disposition', `attachment; filename=tax-notifications-${payerName.replace(/\s+/g, '_')}.docx`);
+            
+            return reply.send(result);
+            
+        } catch (error) {
+            console.error('❌ Помилка генерації всіх нарахувань:', error);
+            throw error;
+        }
+    }
+
+    groupChargesByTaxType(charges) {
+        const grouped = {
+            non_residential: [],
+            residential: [],
+            land: [],
+            rent: [],
+            mpz: []
+        };
+        
+        charges.forEach(charge => {
+            const { taxType } = determineTaxType(charge);
+            if (grouped[taxType]) {
+                grouped[taxType].push(charge);
+            } else {
+                grouped.land.push(charge);
+            }
+        });
+        
+        return grouped;
+    }
+
+    async createMultipleChargesDocument(groupedCharges, settings, debtorInfo, payerName) {
+        try {
+            const { createMultipleChargesWord } = require('../../../utils/generateDocx');
+            
+            return await createMultipleChargesWord(
+                groupedCharges,
+                settings,
+                debtorInfo,
+                payerName
+            );
+        } catch (error) {
+            console.error('❌ Помилка створення документа:', error);
+            throw error;
+        }
     }
 
     async processExcelUpload(request) {
@@ -744,60 +887,141 @@ class DebtChargesService {
     }
 
     // Решта методів залишається без змін...
-    async generateTaxNotificationById(request, reply) {
+    /**async generateTaxNotificationById(request, reply) {
         try {
+            console.log('🔍 Generating tax notification for charge ID:', request.params.id);
+            
             if (!Object.keys([displayDebtChargesFields]).length) {
                 throw new Error(fieldsListMissingError);
             }
             
-            const chargeData = await debtChargesRepository.getDebtChargeById(request?.params?.id, displayDebtChargesFields);
+            // 1. ОТРИМАННЯ ОСНОВНОГО НАРАХУВАННЯ
+            const mainChargeData = await debtChargesRepository.getDebtChargeById(
+                request?.params?.id, 
+                displayDebtChargesFields
+            );
             
-            if (!chargeData.length) {
+            if (!mainChargeData.length) {
                 throw new Error("Нарахування не знайдено");
             }
             
-            const fetchRequisite = await debtorRepository.getRequisite();
+            const mainCharge = mainChargeData[0];
+            console.log('📋 Main charge found:', {
+                id: mainCharge.id,
+                tax_number: mainCharge.tax_number,
+                payer_name: mainCharge.payer_name,
+                amount: mainCharge.amount
+            });
+            
+            // 2. ВИЗНАЧЕННЯ ТИПУ ОСНОВНОГО ПОДАТКУ
+            const { taxType: mainTaxType } = this.determineTaxTypeFromCharge(mainCharge);
+            console.log('🎯 Main charge tax type:', mainTaxType);
+            
+            // 3. ПОШУК ВСІХ НАРАХУВАНЬ ЦІЄЇ ЛЮДИНИ ПО ПІБ
+            console.log('🔍 Searching all charges for person...');
+            
+            let allCharges = [];
+            
+            if (mainCharge.payer_name) {
+                console.log('👤 Searching by payer_name:', mainCharge.payer_name);
+                
+                // 🎯 ГОЛОВНА ЗМІНА: Фільтруємо по payer_name замість tax_number
+                const whereConditions = { payer_name: mainCharge.payer_name };
+                const allChargesResult = await debtChargesRepository.findDebtChargesByFilter(
+                    1000, 0, null, whereConditions, displayDebtChargesFields, 'document_date', 'desc'
+                );
+                
+                allCharges = allChargesResult[0]?.data || [];
+                console.log(`✅ Found ${allCharges.length} charges by payer_name`);
+            }
+            
+            // Якщо по імені не знайшли, використовуємо тільки основне нарахування
+            if (allCharges.length === 0) {
+                console.log('⚠️ No additional charges found, using only main charge');
+                allCharges = [mainCharge];
+            }
+            
+            // 4. ФІЛЬТРАЦІЯ ТІЛЬКИ НАРАХУВАНЬ ТОГО Ж ТИПУ ПОДАТКУ
+            const sameTaxTypeCharges = allCharges.filter(charge => {
+                const { taxType } = this.determineTaxTypeFromCharge(charge);
+                return taxType === mainTaxType;
+            });
+            
+            console.log(`📊 Filtered to same tax type (${mainTaxType}): ${sameTaxTypeCharges.length} charges`);
+            
+            // Сортуємо по даті документа
+            sameTaxTypeCharges.sort((a, b) => {
+                const dateA = new Date(a.document_date || '1900-01-01');
+                const dateB = new Date(b.document_date || '1900-01-01');
+                return dateB - dateA; // desc
+            });
+            
+            // 5. РОЗРАХУНОК ЗАГАЛЬНОЇ СУМИ ДЛЯ ЦЬОГО ТИПУ ПОДАТКУ
+            const totalAmount = sameTaxTypeCharges.reduce((sum, charge) => sum + (Number(charge.amount) || 0), 0);
+            console.log(`💰 Total amount for ${sameTaxTypeCharges.length} charges of type ${mainTaxType}: ${totalAmount.toFixed(2)} грн`);
+            
+            // Статистика по роках
+            const yearSummary = sameTaxTypeCharges.reduce((acc, charge) => {
+                const year = charge.document_date ? new Date(charge.document_date).getFullYear() : 'Невідомий';
+                acc[year] = (acc[year] || 0) + 1;
+                return acc;
+            }, {});
+            console.log('📊 Charges by year for this tax type:', yearSummary);
+            
+            // 6. ОТРИМАННЯ РЕКВІЗИТІВ
+            const fetchRequisite = await debtChargesRepository.getRequisite();
             if (!fetchRequisite.length) {
                 throw new Error("Реквізити не знайдені");
             }
-            
-            const charge = chargeData[0];
             const settings = fetchRequisite[0];
             
-            // Універсальний пошук інформації про боржника
+            // 7. ПОШУК ІНФОРМАЦІЇ ПРО БОРЖНИКА ПО ПІБ
             let debtorInfo = null;
-            if (charge.payer_name) {
+            if (mainCharge.payer_name) {
                 try {
+                    console.log('🔍 Searching debtor by name:', mainCharge.payer_name);
+                    
                     const debtorData = await debtorRepository.findDebtByFilter(
-                        5, 0, charge.payer_name, {},
-                        ['id', 'name', 'date', 'non_residential_debt', 'residential_debt', 'land_debt', 'orenda_debt', 'identification', 'mpz']
+                        5, 0, mainCharge.payer_name, {},
+                        ['id', 'name', 'date', 'non_residential_debt', 'residential_debt', 
+                        'land_debt', 'orenda_debt', 'identification', 'mpz']
                     );
                     
                     if (debtorData[0]?.data && debtorData[0].data.length > 0) {
                         debtorInfo = debtorData[0].data[0];
-                        
-                        if (debtorData[0].data.length > 1) {
-                            console.log(`⚠️ Found ${debtorData[0].data.length} records for name "${charge.payer_name}", using the first one`);
-                        }
+                        console.log('📊 Found debtor info');
                     }
                 } catch (error) {
-                    console.log('⚠️ Error getting debtor info by name:', error.message);
+                    console.log('⚠️ Error getting debtor info:', error.message);
                 }
             }
             
-            const result = await this.createTaxNotificationDocument(charge, settings, debtorInfo);
+            // 8. СТВОРЕННЯ ЗБІРНОГО ОБ'ЄКТУ CHARGE З УСІМА НАРАХУВАННЯМИ ОДНОГО ТИПУ
+            const combinedCharge = {
+                ...mainCharge, // Основна інформація з головного нарахування
+                all_charges: sameTaxTypeCharges, // ВСІ нарахування цього типу
+                total_amount: totalAmount, // Загальна сума
+                charges_count: sameTaxTypeCharges.length // Кількість нарахувань
+            };
+            
+            // 9. ГЕНЕРАЦІЯ ДОКУМЕНТУ
+            const result = await this.createTaxNotificationDocument(
+                combinedCharge, 
+                settings, 
+                debtorInfo
+            );
             
             if (!result) {
                 throw new Error("Не вдалося згенерувати документ податкового повідомлення");
             }
             
+            // 10. ЛОГУВАННЯ ОПЕРАЦІЇ
             await logRepository.createLog({
-                session_user_name: debtorInfo?.name,
-                row_pk_id: charge.id,
+                row_pk_id: mainCharge.id,
                 uid: request?.user?.id,
                 action: 'GENERATE_DOC',
                 client_addr: request?.ip,
-                application_name: 'Генерування податкового повідомлення',
+                application_name: `Генерування податкового повідомлення для ${mainCharge.payer_name} (${sameTaxTypeCharges.length} нарахувань типу ${mainTaxType})`,
                 action_stamp_tx: new Date(),
                 action_stamp_stm: new Date(),
                 action_stamp_clk: new Date(),
@@ -806,8 +1030,10 @@ class DebtChargesService {
                 oid: '16504',
             });
             
+            // 11. HEADERS ТА ВІДПРАВКА
+            const safeFileName = mainCharge.payer_name?.replace(/[^\w\s.-]/g, '_').replace(/\s+/g, '_') || 'unknown';
             reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-            reply.header('Content-Disposition', `attachment; filename=tax-notification-${charge.tax_number}-${charge.id}.docx`);
+            reply.header('Content-Disposition', `attachment; filename=tax-notification-${safeFileName}-${mainTaxType}-${sameTaxTypeCharges.length}charges.docx`);
             
             return reply.send(result);
             
@@ -815,9 +1041,43 @@ class DebtChargesService {
             console.error('❌ Tax notification service error:', error);
             throw new Error(`Помилка генерації податкового повідомлення: ${error.message}`);
         }
+    }**/
+
+    // ДОДАТИ МЕТОД: determineTaxTypeFromCharge
+    determineTaxTypeFromCharge(charge) {
+        const fieldsToCheck = [
+            charge.payment_info || '',
+            charge.tax_classifier || '',
+            charge.account_number || '',
+            charge.full_document_id || ''
+        ].join(' ').toLowerCase();
+        
+        let taxType = 'land';
+        let taxName = 'земельного податку з фізичних осіб';
+        
+        if (fieldsToCheck.includes('18010900')) {
+            taxType = 'rent';
+            taxName = 'оренди землі з фізичних осіб';
+        } else if (fieldsToCheck.includes('18010700')) {
+            taxType = 'land';
+            taxName = 'земельного податку з фізичних осіб';
+        } else if (fieldsToCheck.includes('18010300')) {
+            taxType = 'non_residential';
+            taxName = 'податку на нерухомість (не житлова) з фізичних осіб';
+        } else if (fieldsToCheck.includes('18010200')) {
+            taxType = 'residential';
+            taxName = 'податку на нерухомість (житлова) з фізичних осіб';
+        } else if (fieldsToCheck.includes('11011300')) {
+            taxType = 'mpz';
+            taxName = 'мінімального податкового зобов\'язання (МПЗ)';
+        }
+        
+        return { taxType, taxName };
     }
 
-    async createTaxNotificationDocument(charge, settings, debtorInfo) {
+
+
+    /**async createTaxNotificationDocument(charge, settings, debtorInfo) {
         try {
             const { createTaxNotificationWord } = require("../../../utils/generateDocx");
             return await createTaxNotificationWord(charge, settings, debtorInfo);
@@ -825,7 +1085,7 @@ class DebtChargesService {
             console.error('❌ Document creation error:', error);
             throw error;
         }
-    }
+    }**/
 
     async getStatistics(request) {
         try {
